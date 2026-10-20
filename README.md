@@ -15,7 +15,7 @@ Everything runs locally and for free. There's no API key and no cloud service.
 
 ## Quick start
 
-### Option A: Docker (one command, recommended for the demo)
+### Option A: Docker (one command)
 
 ```bash
 docker compose up --build
@@ -209,7 +209,7 @@ curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
 { "answer": "Volkswagen gewährt 2 Jahre Fehlerfreiheit … [1]", "sources": [ { "filename": "…", "page": 6, "score": 0.74, "text": "…" } ] }
 ```
 
-- **The answer** uses the question's language. `sources` always lists the passages it was given, with page and score. Larger models also cite them inline as `[n]` (= `sources[n-1]`); the 1.5B demo model often doesn't.
+- **The answer** uses the question's language. `sources` always lists the passages it was given, with page and score. Larger models also cite them inline as `[n]` (= `sources[n-1]`); the default 1.5B model often doesn't.
 - **No relevant passages** (none with score ≥ `ANSWER_MIN_SCORE`): it answers "not found" **without calling the LLM**. That's faster and leaves nothing to hallucinate from.
 - **`/ask/stream`** sends newline-delimited JSON: `{"type":"sources"}`, then `{"type":"token"}`… and finally `{"type":"done"}`. On a laptop CPU an answer takes ~30 s, so streaming shows words as they're generated. The UI uses this endpoint.
 - **LLM not reachable:** `503`. Search keeps working.
@@ -242,7 +242,7 @@ Results on the sample PDF (`Gewährleistungshandbuch.pdf`, 155 pages):
 
 The questions it still misses, such as "Wie ist die Fahrzeug-Identifizierungsnummer aufgebaut?", are where the next improvements would be measured: hybrid keyword + vector search, a reranker, or a larger embedding model.
 
-## Answer quality (measured with the demo model)
+## Answer quality (measured with the default model)
 
 I tested real answers from `qwen2.5:1.5b` on the sample PDF, checking each against the source pages.
 
@@ -308,7 +308,7 @@ There are **126 tests in ~25 s**. They need no Ollama, because the LLM is faked 
 ## Limitations and next steps
 
 - **Retrieval quality:** hit@3 is about 71% with a small CPU embedding model. Next would be hybrid BM25 + vector search and a reranker, both measurable with `scripts/evaluate.py`.
-- **LLM size:** 1.5B parameters suits the demo hardware. Larger local models or a hosted API give better answers, and switching is a config value or one adapter.
+- **LLM size:** 1.5B parameters fits an 8 GB laptop without a GPU. Larger local models or a hosted API give better answers, and switching is a config value or one adapter.
 - **Synchronous ingestion:** a 155-page PDF takes ~1 minute. Production would use a job queue and a status endpoint.
 - **No OCR** for scanned PDFs. **No auth** or rate limiting.
 - **Embedded Qdrant** allows one process per folder. Use the Qdrant server (as in Docker) for several workers.

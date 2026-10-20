@@ -1,4 +1,4 @@
-"""Serves the single-page demo UI. It only talks to the public API, like any other client."""
+"""Serves the single-page web UI. It only talks to the public API, like any other client."""
 
 from pathlib import Path
 
