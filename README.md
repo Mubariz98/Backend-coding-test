@@ -21,7 +21,14 @@ Everything runs locally and for free. There's no API key and no cloud service.
 docker compose up --build
 ```
 
-Open **http://localhost:8000**. This starts the API + UI, a Qdrant server, and Ollama with `qwen2.5:1.5b`. The first run downloads about 1 GB for the LLM. Qdrant's dashboard is at http://localhost:6333/dashboard.
+Open **http://localhost:8000**. This starts the API + UI, a Qdrant server, and Ollama with `qwen2.5:1.5b`. The first run downloads the Ollama image (~3.6 GB) and the model (~1 GB). Qdrant's dashboard is at http://localhost:6333/dashboard.
+
+**Lighter variant (Linux), if Ollama is already installed on the machine.** This reuses the host's Ollama and model instead of the Ollama container, which saves ~4.6 GB of downloads and ~1 GB of RAM:
+
+```bash
+ollama pull qwen2.5:1.5b
+docker compose -f docker-compose.yml -f docker-compose.local-ollama.yml up -d --build
+```
 
 ### Option B: Local Python
 

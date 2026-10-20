@@ -1,0 +1,22 @@
+# Lightweight variant: reuse the Ollama installed on this machine instead of the
+# ollama container (saves a ~3.6 GB image, a second model download and ~1 GB RAM).
+# Linux only (host networking). Requires `ollama pull qwen2.5:1.5b` on the host.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local-ollama.yml up -d
+
+services:
+  api:
+    network_mode: host                    # so "localhost" is the host: Ollama :11434, Qdrant :6333
+    ports: !reset []                      # not allowed with host networking; the app listens on :8000 directly
+    environment:
+      QDRANT_URL: http://localhost:6333
+      LLM_BASE_URL: http://localhost:11434
+    depends_on: !override
+      qdrant:
+        condition: service_healthy
+
+  # Not started in this variant.
+  ollama:
+    profiles: ["container-ollama"]
+  ollama-pull:
+    profiles: ["container-ollama"]
