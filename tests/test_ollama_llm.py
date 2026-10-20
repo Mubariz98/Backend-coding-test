@@ -24,6 +24,7 @@ def test_generate_sends_grounded_chat_request():
     assert seen["model"] == "qwen2.5:1.5b"
     assert [m["role"] for m in seen["messages"]] == ["system", "user"]
     assert seen["stream"] is False and seen["options"]["temperature"] <= 0.2
+    assert seen["options"]["num_predict"] == 300  # answer length is capped
 
 
 def test_stream_yields_tokens_from_ndjson():
@@ -37,6 +38,14 @@ def test_missing_model_gives_actionable_error():
     llm = llm_with(lambda request: httpx.Response(404, json={"error": "model not found"}))
     with pytest.raises(LLMUnavailableError, match="ollama pull qwen2.5:1.5b"):
         llm.generate("s", "p")
+
+
+def test_timeout_has_its_own_message():
+    def handler(request):
+        raise httpx.ReadTimeout("slow")
+
+    with pytest.raises(LLMUnavailableError, match="took too long"):
+        llm_with(handler).generate("s", "p")
 
 
 def test_connection_error_becomes_domain_error():

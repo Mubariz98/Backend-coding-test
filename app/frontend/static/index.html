@@ -280,7 +280,7 @@ async function go() {
         else if (ev.type === "error") throw new Error(ev.message);
       }
     }
-    setStatus(status, `Answered in ${((Date.now() - started) / 1000).toFixed(1)}s by the local LLM. Numbers like [1] link to the sources below.`);
+    setStatus(status, `Answered in ${((Date.now() - started) / 1000).toFixed(1)}s by the local LLM. The passages it used are listed below.`);
   } catch (e) {
     const llmDown = e.message.startsWith("503");
     setStatus(status, llmDown ? `${e.message} Start Ollama for answers; "Search only" works without it.` : e.message, true);

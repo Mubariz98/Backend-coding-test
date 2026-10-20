@@ -20,10 +20,12 @@ class OllamaLLM:
         model: str,
         timeout_s: float,
         context_tokens: int,
+        max_tokens: int = 300,
         transport: httpx.BaseTransport | None = None,  # tests inject a mock transport
     ):
         self.model = model
         self._context_tokens = context_tokens
+        self._max_tokens = max_tokens
         # Small CPUs need a long read timeout; connecting should be quick.
         self._client = httpx.Client(
             base_url=base_url, timeout=httpx.Timeout(timeout_s, connect=3.0), transport=transport
@@ -59,7 +61,8 @@ class OllamaLLM:
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "stream": stream,
             "keep_alive": "30m",  # keep the model in RAM between questions
-            "options": {"temperature": 0.1, "num_ctx": self._context_tokens},
+            # num_predict caps the answer length: small models can otherwise ramble until the timeout.
+            "options": {"temperature": 0.1, "num_ctx": self._context_tokens, "num_predict": self._max_tokens},
         }
 
 
@@ -72,5 +75,7 @@ def _translate_errors(model: str) -> Iterator[None]:
         if exc.response.status_code == 404:
             raise LLMUnavailableError(f"Model '{model}' is not installed. Run: ollama pull {model}") from exc
         raise LLMUnavailableError(f"Ollama returned an error: {exc}") from exc
+    except httpx.TimeoutException as exc:
+        raise LLMUnavailableError("The language model took too long to answer.") from exc
     except httpx.HTTPError as exc:
         raise LLMUnavailableError(f"Ollama is not reachable: {exc}") from exc

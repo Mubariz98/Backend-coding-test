@@ -1,4 +1,10 @@
-"""Prompt construction for grounded answers with numbered citations."""
+"""Prompt construction for grounded answers.
+
+Kept short on purpose: with the 1.5B demo model, longer prompts with worked
+examples gave slower and *less* accurate answers (measured on the sample PDF).
+Sources are always returned separately, so answers stay traceable even when a
+small model omits the [n] citations.
+"""
 
 from app.shared.models import SearchHit
 

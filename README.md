@@ -9,7 +9,7 @@ Everything runs locally and for free. There's no API key and no cloud service.
 | `POST /documents` | Upload and index a PDF |
 | `GET /documents`, `GET`/`DELETE /documents/{id}` | List, inspect and delete documents |
 | `POST /query` | Semantic search: the most relevant passages, with page and score |
-| `POST /ask`, `POST /ask/stream` | Answer generation (the "G" in RAG), grounded in the passages, with `[n]` citations |
+| `POST /ask`, `POST /ask/stream` | Answer generation (the "G" in RAG), grounded in the passages, always returned with its sources |
 | `GET /health` | Status, including the active vector DB, models and whether the LLM is reachable |
 | `GET /` | A minimal web UI for all of the above |
 
@@ -44,8 +44,8 @@ Upload:  PDF ─► SHA-256 (reject duplicates) ─► text per page ─► stri
 
 Search:  question ─► embed (same model) ─► nearest chunks ─► min_score filter ─► passages + page + score
 
-Ask:     question ─► search (top 4, score ≥ 0.4) ─┬─ nothing relevant ─► "not found" (LLM not called)
-                                                   └─ prompt with numbered passages ─► local LLM ─► answer with [n] citations
+Ask:     question ─► search (top 3, score ≥ 0.4) ─┬─ nothing relevant ─► "not found" (LLM not called)
+                                                   └─ prompt with numbered passages ─► local LLM ─► answer + sources
 ```
 
 | Component | Choice | Why |
@@ -202,7 +202,7 @@ curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
 { "answer": "Volkswagen gewährt 2 Jahre Fehlerfreiheit … [1]", "sources": [ { "filename": "…", "page": 6, "score": 0.74, "text": "…" } ] }
 ```
 
-- **The answer** uses the question's language and cites passages as `[n]`, which means `sources[n-1]`.
+- **The answer** uses the question's language. `sources` always lists the passages it was given, with page and score. Larger models also cite them inline as `[n]` (= `sources[n-1]`); the 1.5B demo model often doesn't.
 - **No relevant passages** (none with score ≥ `ANSWER_MIN_SCORE`): it answers "not found" **without calling the LLM**. That's faster and leaves nothing to hallucinate from.
 - **`/ask/stream`** sends newline-delimited JSON: `{"type":"sources"}`, then `{"type":"token"}`… and finally `{"type":"done"}`. On a laptop CPU an answer takes ~30 s, so streaming shows words as they're generated. The UI uses this endpoint.
 - **LLM not reachable:** `503`. Search keeps working.
@@ -235,6 +235,18 @@ Results on the sample PDF (`Gewährleistungshandbuch.pdf`, 155 pages):
 
 The questions it still misses, such as "Wie ist die Fahrzeug-Identifizierungsnummer aufgebaut?", are where the next improvements would be measured: hybrid keyword + vector search, a reranker, or a larger embedding model.
 
+## Answer quality (measured with the demo model)
+
+I tested real answers from `qwen2.5:1.5b` on the sample PDF, checking each against the source pages.
+
+| Prompt variant | Result |
+|---|---|
+| Rules prompt, 4 passages | It mixed facts: "5 years" for all cars, though that applies only to *Nutzfahrzeuge*. It also invented "3 years" for the mobility guarantee. |
+| Longer prompt with a worked example | Slower, vaguer, and once it rambled until the timeout. This led to the `LLM_MAX_TOKENS` cap. |
+| **Rules prompt, 3 passages (default)** | Correct on the mobility guarantee, Anschlussgarantie and Ersatzwagen. Answers take **5–15 s** once the model is loaded. It still merges the two warranty periods on the Neuwagen question. |
+
+What this shows: retrieval finds the right pages, and the remaining errors come from the 1.5B model. A larger model (`LLM_MODEL=qwen2.5:7b`, or a hosted LLM adapter) is the fix on better hardware. It's one setting.
+
 ## RAG edge cases handled
 
 | Concern | Handling |
@@ -245,7 +257,7 @@ The questions it still misses, such as "Wie ist die Fahrzeug-Identifizierungsnum
 | Duplicates | The content hash is the ID, so a re-upload returns `409` before any work. Deterministic chunk IDs and upserts mean even concurrent uploads can't duplicate. |
 | Embedding model change | The collection name includes the model, so incompatible vectors are never mixed. |
 | Irrelevant questions | `min_score` for search. `/ask` refuses to answer from weak passages. |
-| Hallucination | The prompt says to use only the passages, cite `[n]`, and say when the answer isn't there. Temperature is 0.1. |
+| Hallucination | The prompt says to use only the passages and to say when the answer isn't there. Only 3 passages are passed (fewer facts to mix up), temperature is 0.1, and answers are capped at 300 tokens. |
 | Encrypted / broken PDFs | Permission-only encryption works. A real password gets `400`. Unreadable pages are skipped with a warning. |
 | Large / slow uploads | Read up to the limit only. Parsing and embedding run in a thread pool, so the server stays responsive. |
 | Untrusted filenames | Paths are stripped (`C:\x\a.pdf` → `a.pdf`). Stored as metadata only. The UI renders PDF text with `textContent`, never as HTML. |
@@ -263,7 +275,8 @@ Set these as environment variables or in `.env` (see [`.env.example`](.env.examp
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Any [FastEmbed text model](https://qdrant.github.io/fastembed/examples/Supported_Models/) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `800` / `160` | Characters; chosen with the evaluation above |
 | `LLM_BASE_URL` / `LLM_MODEL` | `http://localhost:11434` / `qwen2.5:1.5b` | Ollama server and model |
-| `ANSWER_TOP_K` / `ANSWER_MIN_SCORE` | `4` / `0.4` | Passages given to the LLM, and the relevance threshold |
+| `ANSWER_TOP_K` / `ANSWER_MIN_SCORE` | `3` / `0.4` | Passages given to the LLM, and the relevance threshold |
+| `LLM_MAX_TOKENS` | `300` | Answer length cap. Stops a small model rambling until the timeout. |
 | `DEFAULT_TOP_K` | `5` | Search results when `top_k` is omitted |
 | `MAX_UPLOAD_MB` | `20` | Upload limit (`100` in Docker) |
 
@@ -273,7 +286,7 @@ Set these as environment variables or in `.env` (see [`.env.example`](.env.examp
 pytest
 ```
 
-There are **125 tests in ~20 s**. They need no Ollama, because the LLM is faked or mocked. API and store tests run on **both** Qdrant and Chroma.
+There are **126 tests in ~25 s**. They need no Ollama, because the LLM is faked or mocked. API and store tests run on **both** Qdrant and Chroma.
 
 | File | Covers |
 |---|---|

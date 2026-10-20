@@ -32,7 +32,11 @@ def build_container(settings: Settings) -> Container:
     embedder = _load_embedder(settings.embedding_model, settings.model_cache_dir)
     store = _build_vector_store(settings, embedder.dimension)
     llm = OllamaLLM(
-        settings.llm_base_url, settings.llm_model, settings.llm_timeout_s, settings.llm_context_tokens
+        settings.llm_base_url,
+        settings.llm_model,
+        settings.llm_timeout_s,
+        settings.llm_context_tokens,
+        settings.llm_max_tokens,
     )
     search = SearchService(store, embedder, settings.default_top_k)
     return Container(
