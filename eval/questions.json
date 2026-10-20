@@ -1,0 +1,23 @@
+{
+  "document": "Gewährleistungshandbuch.pdf",
+  "note": "Relevant pages come from the document's table of contents (section page ranges).",
+  "questions": [
+    {"question": "Welche Garantie bietet Volkswagen auf Neuwagen?", "pages": [5, 6, 7, 8, 133]},
+    {"question": "What warranty does Volkswagen offer on new cars?", "pages": [5, 6, 7, 8, 133]},
+    {"question": "Wie lange gilt die gesetzliche Sachmängelhaftung beim Kaufvertrag?", "pages": [7, 8]},
+    {"question": "In welchen Ländern gilt die 2-Jahres-Garantie?", "pages": [7, 8]},
+    {"question": "Was muss bei der Fahrzeugannahme und Auftragseröffnung beachtet werden?", "pages": [12, 13, 14]},
+    {"question": "Wie müssen Schadensteile behandelt und aufbewahrt werden?", "pages": [30, 31, 32, 33, 34]},
+    {"question": "What applies to high-voltage batteries of electric and plug-in hybrid cars?", "pages": [43, 44, 45]},
+    {"question": "Wie lange gilt die Garantie gegen Durchrostung der Karosserie?", "pages": [54, 55, 56]},
+    {"question": "Was ist die Anschlussgarantie von Volkswagen?", "pages": [62, 63, 64]},
+    {"question": "Was versteht man unter Kulanz und wann wird sie gewährt?", "pages": [65, 66, 67, 68]},
+    {"question": "How long is the warranty on Volkswagen spare parts?", "pages": [72, 73, 74, 75]},
+    {"question": "Wie lange gilt die LongLife Mobilitätsgarantie?", "pages": [78, 79, 82, 99, 103]},
+    {"question": "In welchen Ländern gilt die Mobilitätsgarantie?", "pages": [80, 99]},
+    {"question": "Does the customer get a replacement car after a breakdown?", "pages": [84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 104, 105, 106, 107, 108, 109, 110, 111]},
+    {"question": "How is a withdrawal from the purchase contract handled?", "pages": [112, 113, 114, 115, 116, 117]},
+    {"question": "Wie ist die Fahrzeug-Identifizierungsnummer aufgebaut?", "pages": [135]},
+    {"question": "How must warranty parts be packed and shipped back?", "pages": [145, 146, 147, 148, 149, 150, 151, 152, 153, 154]}
+  ]
+}

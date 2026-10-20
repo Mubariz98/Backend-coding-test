@@ -1,212 +1,271 @@
 # PDF RAG API
 
-A FastAPI service that lets you upload PDF documents and search them with natural-language queries. It works in any language: an English question finds German passages and the other way round.
+Upload PDF documents, search them in natural language, and get **answers with page citations** from a local LLM. It works across languages: an English question finds German passages and the other way round.
 
-Everything runs locally. There's no API key, no Docker and no external server.
+Everything runs locally and for free. There's no API key and no cloud service.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /documents` | Upload and index a PDF |
+| `GET /documents`, `GET`/`DELETE /documents/{id}` | List, inspect and delete documents |
+| `POST /query` | Semantic search: the most relevant passages, with page and score |
+| `POST /ask`, `POST /ask/stream` | Answer generation (the "G" in RAG), grounded in the passages, with `[n]` citations |
+| `GET /health` | Status, including the active vector DB, models and whether the LLM is reachable |
+| `GET /` | A minimal web UI for all of the above |
 
 ## Quick start
 
-Requires Python 3.10+.
+### Option A: Docker (one command, recommended for the demo)
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate   # or: uv venv && source .venv/bin/activate
-pip install -r requirements-dev.txt                    # runtime + test dependencies
-cp .env.example .env                                   # optional; defaults work as-is
+docker compose up --build
+```
+
+Open **http://localhost:8000**. This starts the API + UI, a Qdrant server, and Ollama with `qwen2.5:1.5b`. The first run downloads about 1 GB for the LLM. Qdrant's dashboard is at http://localhost:6333/dashboard.
+
+### Option B: Local Python
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
-Open http://127.0.0.1:8000/docs, upload a PDF under **POST /documents**, then ask questions under **POST /query**. The first start downloads the embedding model (~220 MB) into `data/models/`.
+For answers, also install [Ollama](https://ollama.com) and run `ollama pull qwen2.5:1.5b`. Without Ollama, upload and search work fully, and `/ask` returns `503`. Qdrant runs embedded in `data/`, with no server needed.
 
-On Debian/Ubuntu, `python3 -m venv` needs the `python3-venv` package. Alternatively, use [uv](https://docs.astral.sh/uv/).
+On Debian/Ubuntu, `python3 -m venv` needs the `python3-venv` package. [uv](https://docs.astral.sh/uv/) works too.
 
 ## How it works
 
 ```
-Upload:  PDF ─► hash (reject duplicates) ─► extract text per page ─► strip repeated headers/footers
-             ─► split into overlapping, word-aligned chunks ─► embed ─► vector DB
-Query:   question ─► embed (same model) ─► nearest-neighbour search ─► top-k chunks (+ file, page, score)
+Upload:  PDF ─► SHA-256 (reject duplicates) ─► text per page ─► strip repeated headers/footers
+             ─► overlapping, word-aligned chunks ─► embed ─► Qdrant   (+ metadata row in SQLite)
+
+Search:  question ─► embed (same model) ─► nearest chunks ─► min_score filter ─► passages + page + score
+
+Ask:     question ─► search (top 4, score ≥ 0.4) ─┬─ nothing relevant ─► "not found" (LLM not called)
+                                                   └─ prompt with numbered passages ─► local LLM ─► answer with [n] citations
 ```
 
 | Component | Choice | Why |
 |---|---|---|
-| Vector DB | **Qdrant** (default) or **ChromaDB**, chosen with `VECTOR_DB` | Both run embedded and save to `data/`, so no server is needed. Qdrant can later point at a real server with one line. |
-| Embeddings | [`paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) via [FastEmbed](https://github.com/qdrant/fastembed) | Covers 50+ languages, runs on CPU through ONNX, with no PyTorch and no API key |
-| PDF parsing | `pypdf[crypto]` | The `[crypto]` extra is needed for AES-encrypted PDFs |
-| API / validation | FastAPI + Pydantic v2 | Typed request and response contracts, with OpenAPI docs for free |
+| Vector DB | **Qdrant** (default) or **ChromaDB**, chosen with `VECTOR_DB` | Qdrant runs embedded (a folder) or as a server (Docker) with the same adapter. Chroma proves the interface is swappable. |
+| Embeddings | [`paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) via [FastEmbed](https://github.com/qdrant/fastembed) | 50+ languages, including German. CPU-only through ONNX, ~220 MB, no PyTorch. |
+| LLM | **Qwen2.5 1.5B** via [Ollama](https://ollama.com) | Free and local, ~1 GB RAM, good German. Fits an 8 GB laptop without a GPU. |
+| Metadata | SQLite (Python standard library) | One row per document, for listing, duplicate checks and deletion |
+| PDF parsing | `pypdf[crypto]` | The `[crypto]` extra handles AES-encrypted PDFs |
+| API | FastAPI + Pydantic v2 | Typed contracts and OpenAPI docs at `/docs` |
 
 ## Architecture
 
-The code is organised **by domain**, not by technical layer. It's a lightweight take on Domain-Driven Design combined with **Ports & Adapters** (hexagonal architecture).
+The code is organised **by domain** (DDD-style modules) using **Ports & Adapters**. Business logic depends on small interfaces, and concrete libraries plug in at one place.
 
 ```
 app/
-├── main.py                    # create_app(): lifespan, error handlers, routers. No logic.
+├── main.py                     # create_app(): lifespan wiring, error handlers, routers. No logic.
 │
-├── documents/                 # Bounded context: getting PDFs IN
-│   ├── router.py              #   POST /documents (HTTP only)
-│   ├── schemas.py             #   UploadResponse (Pydantic, API contract)
-│   ├── service.py             #   IngestionService: hash → parse → clean → chunk → embed → store
-│   ├── models.py              #   IngestedDocument (domain object)
-│   ├── pdf_parser.py          #   bytes → page texts (content check, encryption, broken pages)
-│   ├── cleaner.py             #   drops header/footer lines repeated on most pages
-│   ├── chunker.py             #   page texts → overlapping, word-aligned Chunks
-│   └── exceptions.py          #   PDFParseError, EmptyDocumentError, DuplicateDocumentError
+├── documents/                  # Getting PDFs IN, and managing them
+│   ├── router.py               #   POST/GET/DELETE /documents (HTTP only)
+│   ├── schemas.py              #   DocumentResponse (Pydantic)
+│   ├── service.py              #   DocumentService: ingest, list, get, delete
+│   ├── models.py               #   Document (dataclass)
+│   ├── ports.py                #   DocumentRepository (interface)
+│   ├── pdf_parser.py           #   bytes → page texts (content check, encryption, broken pages)
+│   ├── cleaner.py              #   removes header/footer lines repeated on most pages
+│   ├── chunker.py              #   page texts → overlapping, word-aligned Chunks
+│   └── exceptions.py
 │
-├── search/                    # Bounded context: getting answers OUT
-│   ├── router.py              #   POST /query
-│   ├── schemas.py             #   QueryRequest, QueryResponse, SearchResult
-│   └── service.py             #   SearchService: embed query → search → min_score filter
+├── search/                     # Getting passages OUT
+│   ├── router.py, schemas.py   #   POST /query
+│   └── service.py              #   SearchService: embed query → search → min_score filter
 │
-├── health/router.py           # GET /health (also reports active backend + model)
+├── answers/                    # Generating answers (builds on search)
+│   ├── router.py, schemas.py   #   POST /ask, POST /ask/stream (NDJSON)
+│   ├── service.py              #   AnswerService: retrieve → skip LLM if nothing relevant → generate
+│   ├── prompt.py               #   grounded prompt with numbered passages
+│   ├── ports.py                #   LLM (interface)
+│   └── models.py, exceptions.py
 │
-├── shared/                    # Shared kernel: no framework imports at all
-│   ├── models.py              #   Chunk, SearchHit (plain dataclasses)
-│   └── ports.py               #   Embedder, VectorStore (Protocols = interfaces)
+├── frontend/                   # GET /: one static HTML page, a plain API client
+├── health/                     # GET /health
 │
-├── infrastructure/            # Adapters: the ONLY place third-party AI/DB libraries are imported
-│   ├── fastembed_embedder.py  #   Embedder → FastEmbed
-│   ├── qdrant_store.py        #   VectorStore → Qdrant
-│   └── chroma_store.py        #   VectorStore → ChromaDB
+├── shared/                     # Shared kernel: no framework imports
+│   ├── models.py               #   Chunk, SearchHit (dataclasses)
+│   └── ports.py                #   Embedder, VectorStore (interfaces)
+│
+├── infrastructure/             # Adapters: the ONLY place DB/AI libraries are imported
+│   ├── qdrant_store.py         #   VectorStore → Qdrant (embedded or server)
+│   ├── chroma_store.py         #   VectorStore → ChromaDB
+│   ├── fastembed_embedder.py   #   Embedder → FastEmbed
+│   ├── ollama_llm.py           #   LLM → Ollama HTTP API
+│   └── sqlite_document_repository.py   # DocumentRepository → SQLite
 │
 └── core/
-    ├── config.py              # Settings (pydantic-settings, validated at startup)
-    ├── container.py           # Composition root: picks concrete adapters, builds services
-    ├── dependencies.py        # FastAPI Depends(): hands services to routers
-    └── error_handlers.py      # Domain error → HTTP status, in one place
+    ├── config.py               # Settings, validated at startup
+    ├── container.py            # Composition root: picks adapters, builds services
+    ├── dependencies.py         # FastAPI Depends() aliases
+    └── error_handlers.py       # Domain error → HTTP status, in one place
 ```
 
 ### Dependency direction
 
 ```
-            ┌──────────── HTTP edge (FastAPI + Pydantic) ────────────┐
- request ─► │ router ─► schemas                                       │
-            └───┬─────────────────────────────────────────────────────┘
-                ▼
-          ┌─ services (plain Python) ─┐        ┌── infrastructure ───────────┐
-          │ IngestionService           │──────►│ ports.Embedder    ◄── FastEmbedEmbedder
-          │ SearchService              │       │ ports.VectorStore ◄── QdrantVectorStore
-          └────────────────────────────┘       │                   ◄── ChromaVectorStore
-                                               └─────────────────────────────┘
-          core/container.py is the only module that knows which adapter is plugged in.
+ HTTP ─► router ─► service ─┬─► Embedder ◄──────────── FastEmbedEmbedder
+   (FastAPI +      (plain   ├─► VectorStore ◄───────── QdrantVectorStore / ChromaVectorStore
+    Pydantic)      Python)  ├─► DocumentRepository ◄── SqliteDocumentRepository
+                            └─► LLM ◄───────────────── OllamaLLM
+
+         Only core/container.py knows which adapter is plugged in.
 ```
 
-You can check this with `grep`. Services, domain models and ports import **no** FastAPI, Pydantic, Qdrant, Chroma or FastEmbed:
+You can check this with `grep`: services, domain models and ports import **no** FastAPI, Pydantic or DB/AI library.
 
 ```bash
-grep -lE "^(from|import) (fastapi|pydantic|chromadb|qdrant_client|fastembed)" app/*/service.py app/*/models.py app/shared/*.py
+grep -lE "^(from|import) (fastapi|pydantic|chromadb|qdrant_client|fastembed|httpx)" \
+  app/*/service.py app/*/models.py app/*/ports.py app/shared/*.py
 ```
 
-That command should print nothing.
+That command prints nothing.
 
-### Why this design
+### Design principles, and where they show
 
-| Principle | Where it shows |
+| Principle | Where |
 |---|---|
-| **Single responsibility** | Each file does one job. The parser only parses, the chunker only chunks, routers only translate HTTP, and services only orchestrate. |
-| **Dependency inversion** | Services depend on the `Embedder` and `VectorStore` Protocols in `shared/ports.py`, never on a library. |
-| **Open/closed** | A new vector DB means one new adapter file plus one branch in `container.py`. No service, router or schema changes. |
-| **Liskov / contract tests** | `tests/test_vector_stores.py` runs the **same** tests against Qdrant and Chroma. Any new adapter must pass them unchanged. |
-| **Low coupling** | Frameworks stay at the edges. FastAPI lives in `router.py`, `dependencies.py`, `error_handlers.py` and `main.py`. Pydantic lives in `schemas.py` and `config.py`. The domain uses plain dataclasses. |
-| **High cohesion** | Everything about uploading is in `documents/`, and everything about searching is in `search/`. |
-| **Explicit wiring** | `core/container.py` is the single composition root, built once at startup in FastAPI's `lifespan`. |
-| **Fail fast** | Invalid settings (for example `chunk_overlap >= chunk_size`, or an unknown `VECTOR_DB`) stop the app at startup with a clear error. |
-| **Kept deliberately small** | No repository layer, unit-of-work, event bus or DI framework. Those would be ceremony at this size. |
+| **Single responsibility** | One job per file: the parser parses, the chunker chunks, routers translate HTTP, services orchestrate, adapters talk to libraries. |
+| **Dependency inversion** | Services depend on 4 Protocols (`Embedder`, `VectorStore`, `DocumentRepository`, `LLM`), never on a library. |
+| **Open/closed** | A new DB or LLM means one new adapter file plus one line in `container.py`. Services, routers and schemas stay unchanged. |
+| **Liskov / contract tests** | `tests/test_vector_stores.py` runs **identical** tests on Qdrant and Chroma. A new adapter must pass them unchanged. |
+| **Low coupling, high cohesion** | Frameworks stay at the edges, and each domain folder holds everything about its feature. |
+| **Fail fast** | Invalid settings stop startup. An unreachable LLM fails *before* streaming starts, with `503`. |
+| **Kept small on purpose** | No DI framework, event bus or unit-of-work. That would be ceremony at this size. |
 
-### What swapping things actually costs
+### What swapping costs
 
 | Change | Files touched |
 |---|---|
-| Qdrant ⇄ Chroma | **None.** Set `VECTOR_DB=chroma` in `.env`. |
-| Add pgvector, Weaviate, Pinecone… | New `infrastructure/<db>_store.py` with 3 methods, plus one branch in `core/container.py` |
-| Qdrant embedded → Qdrant server | `infrastructure/qdrant_store.py`: `QdrantClient(path=…)` → `QdrantClient(url=…)` |
-| Another embedding model (FastEmbed) | **None.** Set `EMBEDDING_MODEL`. A fresh collection is created automatically, because vectors from different models can't be compared. |
-| OpenAI or another embedding provider | New `infrastructure/<provider>_embedder.py` with 2 methods + `dimension`, plus one line in `container.py` |
-| Pydantic → attrs or msgspec for the API | Only `*/schemas.py`. Services return dataclasses, not Pydantic models. |
-| FastAPI → Flask, Litestar or a CLI | Only `router.py` files, `dependencies.py`, `error_handlers.py` and `main.py`. Services are plain Python classes. |
-| Add LLM answer generation | New `answers/` module that uses `SearchService` and an `LLM` port, plus one `include_router` line |
+| Qdrant ⇄ Chroma | **None.** `VECTOR_DB=chroma` |
+| Embedded Qdrant → Qdrant server | **None.** `QDRANT_URL=http://…`, as `docker-compose.yml` does |
+| Bigger local LLM | **None.** `LLM_MODEL=qwen2.5:7b` |
+| Hosted LLM (OpenAI, Claude, …) | New `infrastructure/<provider>_llm.py` (3 methods) + 1 line in `container.py` |
+| pgvector, Weaviate, Pinecone… | New `infrastructure/<db>_store.py` (3 methods) + 1 branch in `container.py` |
+| Other embedding model | **None** for FastEmbed models (`EMBEDDING_MODEL`); a fresh collection is created automatically |
+| SQLite → Postgres for metadata | New `infrastructure/postgres_document_repository.py` (4 methods) |
+| Pydantic → another validation library | Only `*/schemas.py` and `core/config.py`. Services use dataclasses. |
+| FastAPI → another framework or a CLI | Only routers, `dependencies.py`, `error_handlers.py` and `main.py` |
 
-## API
+## API details
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/health` | Liveness, plus the active `vector_db` and `embedding_model` |
-| POST | `/documents` | Upload a PDF (multipart field `file`) |
-| POST | `/query` | Semantic search over uploaded PDFs |
-
-### Upload
+### Upload: `POST /documents`
 
 ```bash
-curl -F "file=@sample.pdf" http://127.0.0.1:8000/documents
+curl -F "file=@samples/Gewährleistungshandbuch.pdf" http://localhost:8000/documents
 ```
 
 ```json
-{ "document_id": "f23d3db4f1aaf08b55b8e0797c84d74c", "filename": "sample.pdf", "pages": 212, "chunks": 913 }
+{ "document_id": "c9caf8bcdb9c29420f7385e198938181", "filename": "Gewährleistungshandbuch.pdf",
+  "pages": 155, "chunks": 504, "size_bytes": 5577348, "uploaded_at": "2026-10-20T21:33:47Z" }
 ```
 
 | Status | When |
 |---|---|
 | `201` | Indexed |
 | `400` | Not a PDF by content (the extension is ignored), corrupt, or password-protected |
-| `409` | The same file content was already uploaded, under any filename |
+| `409` | The same file content is already uploaded, under any filename |
 | `413` | Larger than `MAX_UPLOAD_MB` |
-| `422` | No extractable text (for example a scanned image, which would need OCR), or the `file` field is missing |
+| `422` | No extractable text (scanned images need OCR), or the `file` field is missing |
 
-### Query
+`GET /documents` lists documents newest first. `DELETE /documents/{id}` removes the chunks and the metadata (`204`, or `404` if unknown), after which the same file can be uploaded again.
+
+### Search: `POST /query`
 
 ```bash
-curl -X POST http://127.0.0.1:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "How do I fix a leaking faucet?", "top_k": 3, "min_score": 0.4}'
+curl -X POST http://localhost:8000/query -H "Content-Type: application/json" \
+  -d '{"query": "What warranty does Volkswagen offer on new cars?", "top_k": 3}'
 ```
 
 | Field | Required | Meaning |
 |---|---|---|
 | `query` | yes | 1–2000 characters, trimmed. Any language. |
 | `top_k` | no | 1–50. Defaults to `DEFAULT_TOP_K`. |
-| `document_id` | no | Search only within this document |
-| `min_score` | no | Drop results below this cosine similarity (−1…1). Use it to avoid returning irrelevant chunks. |
+| `document_id` | no | Search one document only |
+| `min_score` | no | Drop results below this cosine similarity (−1…1) |
 
-```json
-{
-  "query": "How do I fix a leaking faucet?",
-  "results": [
-    { "text": "Fixing Ball-Type Faucets A ball faucet can leak…", "document_id": "f23d…", "filename": "Plumbing.pdf", "page": 100, "score": 0.70 }
-  ]
-}
+### Answer: `POST /ask` and `POST /ask/stream`
+
+```bash
+curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
+  -d '{"question": "Welche Garantie bietet Volkswagen auf Neuwagen?"}'
 ```
 
-## RAG design decisions and edge cases
+```json
+{ "answer": "Volkswagen gewährt 2 Jahre Fehlerfreiheit … [1]", "sources": [ { "filename": "…", "page": 6, "score": 0.74, "text": "…" } ] }
+```
+
+- **The answer** uses the question's language and cites passages as `[n]`, which means `sources[n-1]`.
+- **No relevant passages** (none with score ≥ `ANSWER_MIN_SCORE`): it answers "not found" **without calling the LLM**. That's faster and leaves nothing to hallucinate from.
+- **`/ask/stream`** sends newline-delimited JSON: `{"type":"sources"}`, then `{"type":"token"}`… and finally `{"type":"done"}`. On a laptop CPU an answer takes ~30 s, so streaming shows words as they're generated. The UI uses this endpoint.
+- **LLM not reachable:** `503`. Search keeps working.
+
+## Retrieval evaluation
+
+**What it is:** an exam for the search step. A good answer needs the right passage, so retrieval quality decides answer quality.
+
+1. [`eval/questions.json`](eval/questions.json) holds **17 questions** about the sample PDF, in German and English, with the **pages where the answer is** taken from the document's table of contents.
+2. [`scripts/evaluate.py`](scripts/evaluate.py) indexes the PDF with the app's real pipeline, asks every question, and checks where the correct page shows up in the results:
+   - **hit@3**: how often a correct page is in the top 3, "found it at all".
+   - **MRR** (mean reciprocal rank): how *high* it ranks. 1st place scores 1, 2nd scores 0.5, 3rd scores 0.33, and a miss scores 0. The average is between 0 and 1.
+3. Running it with different settings shows which setting is actually better, instead of guessing.
+
+```bash
+python scripts/evaluate.py                    # compares chunk sizes; ~1 min each
+python scripts/evaluate.py --configs 800:160 --verbose   # per-question ✓/✗ with the pages found
+```
+
+Results on the sample PDF (`Gewährleistungshandbuch.pdf`, 155 pages):
+
+| Chunk size / overlap (characters) | Chunks | hit@3 | MRR@3 |
+|---|---|---|---|
+| 400 / 80 | 962 | 65% | 0.46 |
+| 600 / 120 | 649 | 65% | 0.58 |
+| **800 / 160 (default)** | 504 | **71%** | **0.62** |
+| 1000 / 200 | 412 | 71% | 0.63 |
+
+**Decision:** 800/160 matches 1000/200's quality, but its chunks are 20% shorter. Each answer therefore sends a shorter prompt to the LLM, which matters on a laptop CPU. Small chunks (400) lose too much context.
+
+The questions it still misses, such as "Wie ist die Fahrzeug-Identifizierungsnummer aufgebaut?", are where the next improvements would be measured: hybrid keyword + vector search, a reranker, or a larger embedding model.
+
+## RAG edge cases handled
 
 | Concern | Handling |
 |---|---|
-| **Model input limit** | The model reads at most **128 tokens**, and longer text is silently truncated. 1000-character chunks lost about half their text this way. |
-| **Chunk size (measured, not guessed)** | A small retrieval eval with 9 questions, known answer pages, English and German, and both PDFs compared three settings. **400/80**: hit@3 6/9 (too little context). **600/120**: hit@3 **8/9**. **1000/200**: hit@3 7/9 (truncated). 600/120 is the default. |
-| **Chunk boundaries** | Chunks are word-aligned, so no word is ever cut in half. Consecutive chunks overlap, so a sentence crossing a boundary is still found. |
-| **Page attribution** | Each page is chunked separately, so every result has an exact page number. |
-| **Repeated headers/footers** | Lines found on ≥50% of pages are removed, ignoring digits so "page 6" matches "page 7". Otherwise company names and dates appear in every chunk and make them all look alike. |
-| **Duplicates** | `document_id` is the SHA-256 of the file content. A re-upload returns `409` before any parsing or embedding. Chunk IDs are deterministic and stores upsert, so even two simultaneous uploads can't create duplicates. |
-| **Model changes** | The collection name includes the model name, so changing `EMBEDDING_MODEL` never mixes incompatible vectors. |
-| **Irrelevant queries** | The search always returns the nearest chunks, so use `min_score` to drop weak matches. Scores below ~0.35 usually mean nothing relevant was found. |
-| **Encrypted PDFs** | Permission-only encryption with an empty password is supported. PDFs that need a real password get `400`. |
-| **Broken pages** | A page that fails to parse is skipped with a warning instead of failing the whole document. |
-| **Large uploads** | At most `MAX_UPLOAD_MB` + 1 bytes are read, so oversized files are never fully loaded into memory. |
-| **Long ingestion** | Parsing and embedding run in a thread pool, so the server keeps answering other requests during a long upload. |
-| **Untrusted filenames** | Paths are stripped (`C:\Users\x\a.pdf` → `a.pdf`). The filename is stored only as metadata. |
+| Repeated headers/footers | Lines on ≥50% of pages are removed, ignoring digits so "page 6" matches "page 7". Otherwise "Volkswagen AG … intern" appears in every chunk and makes them all look alike. |
+| Chunk boundaries | Word-aligned, so no word is cut in half. Overlap keeps sentences that cross a boundary findable. |
+| Page attribution | Each page is chunked separately, so every passage has an exact page. |
+| Duplicates | The content hash is the ID, so a re-upload returns `409` before any work. Deterministic chunk IDs and upserts mean even concurrent uploads can't duplicate. |
+| Embedding model change | The collection name includes the model, so incompatible vectors are never mixed. |
+| Irrelevant questions | `min_score` for search. `/ask` refuses to answer from weak passages. |
+| Hallucination | The prompt says to use only the passages, cite `[n]`, and say when the answer isn't there. Temperature is 0.1. |
+| Encrypted / broken PDFs | Permission-only encryption works. A real password gets `400`. Unreadable pages are skipped with a warning. |
+| Large / slow uploads | Read up to the limit only. Parsing and embedding run in a thread pool, so the server stays responsive. |
+| Untrusted filenames | Paths are stripped (`C:\x\a.pdf` → `a.pdf`). Stored as metadata only. The UI renders PDF text with `textContent`, never as HTML. |
 
 ## Configuration
 
-Set these as environment variables or in `.env`. They're validated at startup.
+Set these as environment variables or in `.env` (see [`.env.example`](.env.example)). They're validated at startup.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `VECTOR_DB` | `qdrant` | `qdrant` or `chroma` |
-| `QDRANT_PATH` / `CHROMA_PATH` | `./data/qdrant` / `./data/chroma` | Where vectors are persisted |
-| `COLLECTION_NAME` | `pdf_chunks` | Prefix; the model name is appended automatically |
+| `QDRANT_URL` | *(unset)* | Qdrant server URL. If unset, embedded at `QDRANT_PATH`. |
+| `QDRANT_PATH` / `CHROMA_PATH` | `./data/qdrant` / `./data/chroma` | Embedded storage folders |
+| `SQLITE_PATH` | `./data/documents.db` | Document metadata |
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Any [FastEmbed text model](https://qdrant.github.io/fastembed/examples/Supported_Models/) |
-| `MODEL_CACHE_DIR` | `./data/models` | Model download location |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `600` / `120` | In characters. Overlap must be smaller than size. |
-| `DEFAULT_TOP_K` | `5` | 1–50 |
-| `MAX_UPLOAD_MB` | `20` | Upload size limit |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `800` / `160` | Characters; chosen with the evaluation above |
+| `LLM_BASE_URL` / `LLM_MODEL` | `http://localhost:11434` / `qwen2.5:1.5b` | Ollama server and model |
+| `ANSWER_TOP_K` / `ANSWER_MIN_SCORE` | `4` / `0.4` | Passages given to the LLM, and the relevance threshold |
+| `DEFAULT_TOP_K` | `5` | Search results when `top_k` is omitted |
+| `MAX_UPLOAD_MB` | `20` | Upload limit (`100` in Docker) |
 
 ## Tests
 
@@ -214,20 +273,26 @@ Set these as environment variables or in `.env`. They're validated at startup.
 pytest
 ```
 
-The suite has 88 tests and runs in about 15 seconds. API and store tests run against **both** Qdrant and Chroma.
+There are **125 tests in ~20 s**. They need no Ollama, because the LLM is faked or mocked. API and store tests run on **both** Qdrant and Chroma.
 
-| File | What it covers |
+| File | Covers |
 |---|---|
-| `test_chunker.py`, `test_cleaner.py`, `test_pdf_parser.py` | Text processing: word alignment, overlap, oversized words, header removal, non-PDF, corrupt, password-protected |
-| `test_validation.py` | Pydantic rules for settings and requests: empty or whitespace query, `top_k` bounds, invalid backend, overlap ≥ size |
-| `test_services.py` | Use cases with **fake** `Embedder` and `VectorStore`, so no DB and no model: dedup, header stripping, `min_score`, filters |
-| `test_vector_stores.py` | **Contract tests** run on every adapter: ranking, scores, filters, idempotent upsert, empty store, persistence |
-| `test_api.py` | End-to-end HTTP with the real model: every status code, cross-lingual search, `document_id` filter, `min_score`, path stripping |
+| `test_chunker.py`, `test_cleaner.py`, `test_pdf_parser.py` | Text processing and every bad-input case (non-PDF, corrupt, password, empty) |
+| `test_validation.py` | Settings and request validation rules |
+| `test_services.py` | All use cases with in-memory fakes: dedup, delete, `min_score`, skip-LLM-when-irrelevant, streaming |
+| `test_vector_stores.py` | **Contract tests** on every vector DB adapter |
+| `test_document_repository.py` | SQLite adapter: round trip, ordering, persistence |
+| `test_ollama_llm.py` | Ollama adapter against a mocked HTTP layer: requests, streaming, missing model, server down |
+| `test_api.py` | End-to-end HTTP with the real embedding model: every status code, document management, `/ask`, `/ask/stream`, UI |
 
 ## Limitations and next steps
 
-- **No answer generation yet.** The service retrieves relevant chunks but doesn't generate an answer. That would be an `answers/` module calling an LLM with the top chunks.
-- **No OCR.** Scanned PDFs return `422`.
-- **Synchronous ingestion.** A 200-page PDF takes about 1.5 minutes on CPU. For production, ingestion should go to a background job queue, with a status endpoint.
-- **No document management.** There are no list or delete endpoints yet, so a `409` can't be resolved by deleting and re-uploading.
-- **Single process.** Embedded Qdrant allows one process per data folder. Use a Qdrant server for multiple workers.
+- **Retrieval quality:** hit@3 is about 71% with a small CPU embedding model. Next would be hybrid BM25 + vector search and a reranker, both measurable with `scripts/evaluate.py`.
+- **LLM size:** 1.5B parameters suits the demo hardware. Larger local models or a hosted API give better answers, and switching is a config value or one adapter.
+- **Synchronous ingestion:** a 155-page PDF takes ~1 minute. Production would use a job queue and a status endpoint.
+- **No OCR** for scanned PDFs. **No auth** or rate limiting.
+- **Embedded Qdrant** allows one process per folder. Use the Qdrant server (as in Docker) for several workers.
+
+## Sample PDF
+
+`samples/` holds the sample document provided with the task. It's marked internal, so it's **not committed** by default (see `.gitignore`). Place it in `samples/` to run the evaluation.

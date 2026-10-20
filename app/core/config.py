@@ -23,10 +23,10 @@ class Settings(BaseSettings):
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     model_cache_dir: str = "./data/models"
 
-    # Chunking, in characters. The model reads at most 128 tokens (~500-600 chars) and
-    # truncates the rest. 600/120 scored best in a retrieval eval (vs 400 and 1000).
-    chunk_size: int = Field(600, gt=0)
-    chunk_overlap: int = Field(120, ge=0)
+    # Chunking, in characters. Chosen by scripts/evaluate.py on the sample PDF:
+    # 800/160 matched 1000/200 (hit@3 71%) with smaller prompts for the LLM.
+    chunk_size: int = Field(800, gt=0)
+    chunk_overlap: int = Field(160, ge=0)
 
     default_top_k: int = Field(5, ge=1, le=50)
 

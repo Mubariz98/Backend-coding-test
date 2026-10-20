@@ -30,7 +30,7 @@
   main { display: grid; grid-template-columns: 340px 1fr; gap: 20px; padding: 20px 24px; max-width: 1300px; margin: 0 auto; }
   @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 16px; } }
   section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
-  .drop { border: 2px dashed var(--border); border-radius: var(--radius); padding: 22px 12px; text-align: center;
+  .drop { display: block; border: 2px dashed var(--border); border-radius: var(--radius); padding: 22px 12px; text-align: center;
           color: var(--muted); cursor: pointer; transition: .15s; }
   .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
   .drop input { display: none; }
@@ -282,8 +282,9 @@ async function go() {
     }
     setStatus(status, `Answered in ${((Date.now() - started) / 1000).toFixed(1)}s by the local LLM. Numbers like [1] link to the sources below.`);
   } catch (e) {
-    setStatus(status, e.message, true);
-    if (e.message.startsWith("503")) loadHealth();
+    const llmDown = e.message.startsWith("503");
+    setStatus(status, llmDown ? `${e.message} Start Ollama for answers; "Search only" works without it.` : e.message, true);
+    if (llmDown) loadHealth();
   } finally {
     $("go").disabled = false;
   }

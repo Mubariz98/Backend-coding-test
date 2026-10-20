@@ -1,7 +1,18 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Local config and runtime data (indexes, models, uploads)
 .env
 data/
-.pytest_cache/
+
+# Editor / tooling
 .claude/
+.vscode/
+.idea/
+
+# Sample PDF: provided with the task, marked internal. Not committed by default;
+# remove this line if the reviewers should get it from the repository.
+samples/*.pdf
