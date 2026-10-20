@@ -1,7 +1,7 @@
 """Qdrant implementation of the `VectorStore` port.
 
-Runs in embedded (local) mode: data is persisted to `path`, no server needed.
-To use a Qdrant server instead, construct the client with `QdrantClient(url=...)`.
+Two modes, same code: embedded (`path`: data on local disk, no server) or
+client/server (`url`: e.g. the Qdrant container in docker-compose).
 """
 
 import uuid
@@ -13,8 +13,10 @@ from app.shared.ports import Vector
 
 
 class QdrantVectorStore:
-    def __init__(self, path: str, collection_name: str, vector_size: int):
-        self._client = QdrantClient(path=path)
+    def __init__(
+        self, collection_name: str, vector_size: int, path: str | None = None, url: str | None = None
+    ):
+        self._client = QdrantClient(url=url) if url else QdrantClient(path=path)
         self._collection = collection_name
         if not self._client.collection_exists(collection_name):
             self._client.create_collection(
@@ -67,11 +69,10 @@ class QdrantVectorStore:
             for p in res.points
         ]
 
-    def has_document(self, document_id: str) -> bool:
-        res = self._client.count(
-            self._collection, count_filter=_document_filter(document_id), exact=True
+    def delete_document(self, document_id: str) -> None:
+        self._client.delete(
+            self._collection, points_selector=models.FilterSelector(filter=_document_filter(document_id))
         )
-        return res.count > 0
 
 
 def _point_id(chunk_id: str) -> str:

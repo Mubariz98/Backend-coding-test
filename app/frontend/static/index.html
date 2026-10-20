@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF RAG</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --border: #dde2e8;
+    --accent: #2f6fde; --accent-soft: #e8f0fd; --ok: #1f8a4c; --warn: #b7791f; --err: #c53030;
+    --radius: 10px; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #1a1f25; --text: #e6e9ed; --muted: #95a0ad; --border: #2c333c;
+      --accent: #6aa0ff; --accent-soft: #1e2a3d; --ok: #4cc27f; --warn: #e0a84a; --err: #f07070;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+           padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); }
+  .pill.ok { color: var(--ok); border-color: currentColor; }
+  .pill.bad { color: var(--warn); border-color: currentColor; }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 20px; padding: 20px 24px; max-width: 1300px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .drop { border: 2px dashed var(--border); border-radius: var(--radius); padding: 22px 12px; text-align: center;
+          color: var(--muted); cursor: pointer; transition: .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+  .drop input { display: none; }
+  .docs { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 8px; }
+  .doc { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; gap: 8px; align-items: start; }
+  .doc .name { font-weight: 600; word-break: break-word; }
+  .doc .meta { font-size: 12px; color: var(--muted); }
+  .doc button { margin-left: auto; }
+  .empty { color: var(--muted); font-size: 14px; }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--border); background: var(--panel);
+           color: var(--text); padding: 7px 14px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .55; cursor: wait; }
+  button.icon { padding: 2px 8px; font-size: 13px; color: var(--muted); }
+  textarea, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+                     border-radius: 8px; padding: 10px 12px; width: 100%; }
+  textarea { resize: vertical; min-height: 72px; }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .controls select { width: auto; flex: 1 1 200px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .answer { white-space: pre-wrap; font-size: 16px; line-height: 1.6; margin: 18px 0 6px; min-height: 1em; }
+  .cite { display: inline-block; font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft);
+          border-radius: 5px; padding: 0 5px; margin: 0 1px; cursor: pointer; }
+  .status { font-size: 13px; color: var(--muted); margin-top: 10px; min-height: 1.2em; }
+  .status.err { color: var(--err); }
+  .sources { display: grid; gap: 10px; margin-top: 16px; }
+  .src { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; scroll-margin: 20px; }
+  .src.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .src .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+  .src .num { font-weight: 700; color: var(--accent); }
+  .src .score { margin-left: auto; font-family: var(--mono); color: var(--muted); }
+  .src .text { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border);
+             border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>📄 PDF RAG</h1>
+  <div class="pills" id="pills"><span class="pill">connecting…</span></div>
+</header>
+
+<main>
+  <section>
+    <h2>Documents</h2>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="application/pdf,.pdf">
+      <strong>Drop a PDF here</strong><br><span style="font-size:13px">or click to choose a file</span>
+    </label>
+    <div class="status" id="uploadStatus"></div>
+    <ul class="docs" id="docs"></ul>
+  </section>
+
+  <section>
+    <h2>Ask your documents</h2>
+    <textarea id="question" placeholder="e.g. Welche Garantie bietet Volkswagen?  /  What warranty does Volkswagen offer?"></textarea>
+    <div class="controls">
+      <div class="seg" role="group" aria-label="Mode">
+        <button id="modeAsk" class="on" type="button">Answer (LLM)</button>
+        <button id="modeSearch" type="button">Search only</button>
+      </div>
+      <select id="scope" aria-label="Search scope"><option value="">All documents</option></select>
+      <button class="primary" id="go" type="button">Ask</button>
+    </div>
+    <div class="status" id="askStatus"></div>
+    <div class="answer" id="answer"></div>
+    <div class="sources" id="sources"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let mode = "ask";
+let llmOk = false;
+
+// ---------- helpers ----------
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const setStatus = (node, text, isErr = false, spin = false) => {
+  node.className = "status" + (isErr ? " err" : "");
+  node.textContent = "";
+  if (spin) node.append(el("span", "spinner"), " ");
+  node.append(text);
+};
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const body = await res.json(); detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail); } catch {}
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.status === 204 ? null : res;
+}
+
+// ---------- health ----------
+async function loadHealth() {
+  const pills = $("pills");
+  try {
+    const h = await (await api("/health")).json();
+    llmOk = h.llm_status === "ok";
+    pills.replaceChildren(
+      el("span", "pill ok", `vector DB: ${h.vector_db}`),
+      el("span", "pill", `embeddings: ${h.embedding_model.split("/").pop()}`),
+      el("span", "pill " + (llmOk ? "ok" : "bad"), `LLM: ${h.llm_model} ${llmOk ? "✓" : "(offline: search only)"}`),
+    );
+    if (!llmOk && mode === "ask") setMode("search");
+  } catch (e) {
+    pills.replaceChildren(el("span", "pill bad", "API unreachable"));
+  }
+}
+
+// ---------- documents ----------
+async function loadDocuments() {
+  const docs = await (await api("/documents")).json();
+  const list = $("docs");
+  const scope = $("scope");
+  const selected = scope.value;
+  list.replaceChildren();
+  scope.replaceChildren(new Option("All documents", ""));
+  if (!docs.length) list.append(el("li", "empty", "No documents yet. Upload a PDF to start."));
+  for (const d of docs) {
+    const li = el("li", "doc");
+    const info = el("div");
+    info.append(el("div", "name", d.filename),
+      el("div", "meta", `${d.pages} pages · ${d.chunks} chunks · ${(d.size_bytes / 1048576).toFixed(1)} MB · ${new Date(d.uploaded_at).toLocaleString()}`));
+    const del = el("button", "icon", "Delete");
+    del.title = "Delete document";
+    del.onclick = async () => {
+      if (!confirm(`Delete "${d.filename}" and all its chunks?`)) return;
+      del.disabled = true;
+      try { await api(`/documents/${d.document_id}`, { method: "DELETE" }); await loadDocuments(); }
+      catch (e) { alert(e.message); del.disabled = false; }
+    };
+    li.append(info, del);
+    list.append(li);
+    scope.append(new Option(d.filename, d.document_id));
+  }
+  scope.value = docs.some(d => d.document_id === selected) ? selected : "";
+}
+
+async function upload(file) {
+  if (!file) return;
+  const status = $("uploadStatus");
+  const started = Date.now();
+  const timer = setInterval(() => setStatus(status, `Indexing ${file.name}… ${Math.round((Date.now() - started) / 1000)}s (about 1 min per 150 pages)`, false, true), 1000);
+  setStatus(status, `Uploading ${file.name}…`, false, true);
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const d = await (await api("/documents", { method: "POST", body: form })).json();
+    setStatus(status, `✓ ${d.filename}: ${d.pages} pages, ${d.chunks} chunks in ${Math.round((Date.now() - started) / 1000)}s`);
+    await loadDocuments();
+  } catch (e) {
+    setStatus(status, e.message, true);
+  } finally {
+    clearInterval(timer);
+    $("file").value = "";
+  }
+}
+
+const drop = $("drop");
+$("file").onchange = (e) => upload(e.target.files[0]);
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); upload(e.dataTransfer.files[0]); };
+
+// ---------- ask / search ----------
+function setMode(m) {
+  mode = m;
+  $("modeAsk").classList.toggle("on", m === "ask");
+  $("modeSearch").classList.toggle("on", m === "search");
+  $("go").textContent = m === "ask" ? "Ask" : "Search";
+}
+$("modeAsk").onclick = () => setMode("ask");
+$("modeSearch").onclick = () => setMode("search");
+
+function renderSources(sources) {
+  const box = $("sources");
+  box.replaceChildren();
+  sources.forEach((s, i) => {
+    const card = el("div", "src");
+    card.id = `src-${i + 1}`;
+    const head = el("div", "head");
+    head.append(el("span", "num", `[${i + 1}]`), el("span", null, s.filename), el("span", null, `page ${s.page}`),
+                el("span", "score", `score ${s.score.toFixed(2)}`));
+    card.append(head, el("div", "text", s.text));
+    box.append(card);
+  });
+}
+
+// Turn "[1]" markers in the answer into clickable chips that jump to the source card.
+function renderAnswer(text) {
+  const box = $("answer");
+  box.replaceChildren();
+  for (const part of text.split(/(\[\d+\])/g)) {
+    const m = part.match(/^\[(\d+)\]$/);
+    if (!m) { box.append(part); continue; }
+    const chip = el("span", "cite", part);
+    chip.onclick = () => {
+      const card = $(`src-${m[1]}`);
+      if (!card) return;
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.add("flash"); setTimeout(() => card.classList.remove("flash"), 1200);
+    };
+    box.append(chip);
+  }
+}
+
+async function go() {
+  const question = $("question").value.trim();
+  if (!question) return;
+  const documentId = $("scope").value || null;
+  const status = $("askStatus");
+  $("go").disabled = true;
+  renderAnswer(""); renderSources([]);
+  const started = Date.now();
+  try {
+    if (mode === "search") {
+      setStatus(status, "Searching…", false, true);
+      const r = await (await api("/query", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: question, top_k: 5, document_id: documentId }) })).json();
+      renderSources(r.results);
+      setStatus(status, r.results.length ? `${r.results.length} passages in ${Date.now() - started} ms` : "No results.");
+      return;
+    }
+    setStatus(status, "Finding relevant passages and starting the local LLM…", false, true);
+    const res = await api("/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, document_id: documentId }) });
+    // The server sends one JSON event per line: sources, token..., done | error.
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "", answer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === "sources") { renderSources(ev.sources); setStatus(status, "Generating answer…", false, true); }
+        else if (ev.type === "token") { answer += ev.text; renderAnswer(answer); }
+        else if (ev.type === "error") throw new Error(ev.message);
+      }
+    }
+    setStatus(status, `Answered in ${((Date.now() - started) / 1000).toFixed(1)}s by the local LLM. Numbers like [1] link to the sources below.`);
+  } catch (e) {
+    setStatus(status, e.message, true);
+    if (e.message.startsWith("503")) loadHealth();
+  } finally {
+    $("go").disabled = false;
+  }
+}
+$("go").onclick = go;
+$("question").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
+
+loadHealth();
+loadDocuments().catch(e => setStatus($("uploadStatus"), e.message, true));
+</script>
+</body>
+</html>

@@ -1,16 +1,20 @@
 """Composition root: the only place that knows which concrete classes are used.
 
-Everything else depends on the ports in `app/shared/ports.py`. Swapping the
-vector DB or the embedding model means changing this file (or just `.env`).
+Everything else depends on ports (Protocols). Swapping the vector DB, the
+embedding model or the LLM means changing this file, or often just `.env`.
 """
 
 import re
 from dataclasses import dataclass
 from functools import lru_cache
 
+from app.answers.ports import LLM
+from app.answers.service import AnswerService
 from app.core.config import Settings
-from app.documents.service import IngestionService
+from app.documents.service import DocumentService
 from app.infrastructure.fastembed_embedder import FastEmbedEmbedder
+from app.infrastructure.ollama_llm import OllamaLLM
+from app.infrastructure.sqlite_document_repository import SqliteDocumentRepository
 from app.search.service import SearchService
 from app.shared.ports import Embedder, VectorStore
 
@@ -18,17 +22,31 @@ from app.shared.ports import Embedder, VectorStore
 @dataclass(frozen=True)
 class Container:
     settings: Settings
-    ingestion: IngestionService
+    documents: DocumentService
     search: SearchService
+    answers: AnswerService
+    llm: LLM
 
 
 def build_container(settings: Settings) -> Container:
     embedder = _load_embedder(settings.embedding_model, settings.model_cache_dir)
     store = _build_vector_store(settings, embedder.dimension)
+    llm = OllamaLLM(
+        settings.llm_base_url, settings.llm_model, settings.llm_timeout_s, settings.llm_context_tokens
+    )
+    search = SearchService(store, embedder, settings.default_top_k)
     return Container(
         settings=settings,
-        ingestion=IngestionService(store, embedder, settings.chunk_size, settings.chunk_overlap),
-        search=SearchService(store, embedder, settings.default_top_k),
+        documents=DocumentService(
+            SqliteDocumentRepository(settings.sqlite_path),
+            store,
+            embedder,
+            settings.chunk_size,
+            settings.chunk_overlap,
+        ),
+        search=search,
+        answers=AnswerService(search, llm, settings.answer_top_k, settings.answer_min_score),
+        llm=llm,
     )
 
 
@@ -44,7 +62,7 @@ def _build_vector_store(settings: Settings, vector_size: int) -> VectorStore:
     if settings.vector_db == "qdrant":
         from app.infrastructure.qdrant_store import QdrantVectorStore
 
-        return QdrantVectorStore(settings.qdrant_path, collection, vector_size)
+        return QdrantVectorStore(collection, vector_size, path=settings.qdrant_path, url=settings.qdrant_url)
 
     from app.infrastructure.chroma_store import ChromaVectorStore
 

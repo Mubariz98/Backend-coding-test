@@ -7,12 +7,20 @@ routers stay free of try/except blocks.
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.documents.exceptions import DuplicateDocumentError, EmptyDocumentError, PDFParseError
+from app.answers.exceptions import LLMUnavailableError
+from app.documents.exceptions import (
+    DocumentNotFoundError,
+    DuplicateDocumentError,
+    EmptyDocumentError,
+    PDFParseError,
+)
 
 _STATUS_CODES: dict[type[Exception], int] = {
     PDFParseError: 400,
+    DocumentNotFoundError: 404,
     DuplicateDocumentError: 409,
     EmptyDocumentError: 422,
+    LLMUnavailableError: 503,
 }
 
 

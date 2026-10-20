@@ -10,10 +10,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.answers.router import router as answers_router
 from app.core.config import Settings
 from app.core.container import build_container
 from app.core.error_handlers import register_error_handlers
 from app.documents.router import router as documents_router
+from app.frontend.router import router as frontend_router
 from app.health.router import router as health_router
 from app.search.router import router as search_router
 
@@ -33,13 +35,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="PDF RAG API",
         description="Upload PDFs and search them with natural language queries.",
-        version="0.2.0",
+        version="1.0.0",
         lifespan=lifespan,
     )
     register_error_handlers(app)
     app.include_router(health_router)
     app.include_router(documents_router)
     app.include_router(search_router)
+    app.include_router(answers_router)
+    app.include_router(frontend_router)
     return app
 
 

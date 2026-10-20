@@ -1,5 +1,11 @@
-"""End-to-end HTTP tests with the real model. Each runs on Qdrant and on Chroma."""
+"""End-to-end HTTP tests with the real embedding model. Each runs on Qdrant and on Chroma.
 
+The LLM is replaced by FakeLLM where needed, so no Ollama is required.
+"""
+
+import json
+
+from tests.fakes import FakeLLM
 from tests.pdf_factory import make_password_protected_pdf, make_pdf
 
 
@@ -13,10 +19,17 @@ def query(client, **body):
 
 # --- health ---------------------------------------------------------------
 
-def test_health_reports_backend(client):
+def test_health_reports_backend_and_llm(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["vector_db"] in ("qdrant", "chroma")
+    assert body["llm_status"] == "unavailable"  # no Ollama in tests
+
+
+def test_frontend_is_served(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "text/html" in res.headers["content-type"]
 
 
 # --- upload ---------------------------------------------------------------
@@ -27,6 +40,7 @@ def test_upload_returns_summary(client):
     body = res.json()
     assert (body["filename"], body["pages"], body["chunks"]) == ("cats.pdf", 2, 2)
     assert len(body["document_id"]) == 32
+    assert body["size_bytes"] > 0 and body["uploaded_at"]
 
 
 def test_duplicate_upload_returns_409(client):
@@ -124,3 +138,79 @@ def test_top_k_limits_results(client):
 def test_invalid_query_rejected(client):
     assert query(client, query="   ").status_code == 422
     assert query(client, query="ok", top_k=0).status_code == 422
+
+
+# --- document management --------------------------------------------------
+
+def test_list_get_and_delete_documents(client):
+    first = upload(client, "first.pdf", make_pdf("Copper pipes resist corrosion.")).json()
+    second = upload(client, "second.pdf", make_pdf("Cats purr softly.")).json()
+
+    listed = client.get("/documents").json()
+    assert [d["filename"] for d in listed] == ["second.pdf", "first.pdf"]  # newest first
+    assert client.get(f"/documents/{first['document_id']}").json()["filename"] == "first.pdf"
+
+    assert client.delete(f"/documents/{first['document_id']}").status_code == 204
+    assert [d["filename"] for d in client.get("/documents").json()] == ["second.pdf"]
+    # its chunks are gone from the vector DB too
+    results = query(client, query="copper pipes").json()["results"]
+    assert all(r["document_id"] == second["document_id"] for r in results)
+
+
+def test_unknown_document_returns_404(client):
+    assert client.get("/documents/nope").status_code == 404
+    assert client.delete("/documents/nope").status_code == 404
+
+
+def test_reupload_after_delete(client):
+    pdf = make_pdf("Upload, delete, upload again.")
+    doc_id = upload(client, "a.pdf", pdf).json()["document_id"]
+    client.delete(f"/documents/{doc_id}")
+    assert upload(client, "a.pdf", pdf).status_code == 201
+
+
+# --- answers (LLM) --------------------------------------------------------
+
+def test_ask_returns_answer_with_sources(make_client):
+    llm = FakeLLM()
+    client = make_client(llm=llm)
+    upload(client, "garantie.pdf", make_pdf("Die Garantie fuer Neuwagen betraegt zwei Jahre."))
+
+    body = client.post("/ask", json={"question": "Wie lange ist die Garantie?"}).json()
+
+    assert body["answer"] == FakeLLM.ANSWER
+    assert body["sources"][0]["filename"] == "garantie.pdf"
+    assert "Die Garantie fuer Neuwagen" in llm.prompts[0]  # retrieved text reached the LLM
+
+
+def test_ask_without_relevant_documents_does_not_call_llm(make_client):
+    llm = FakeLLM()
+    client = make_client(llm=llm)
+    body = client.post("/ask", json={"question": "Anything?"}).json()  # empty index
+    assert body["sources"] == [] and llm.prompts == []
+
+
+def test_ask_stream_sends_ndjson_events(make_client):
+    client = make_client(llm=FakeLLM())
+    upload(client, "garantie.pdf", make_pdf("Die Garantie fuer Neuwagen betraegt zwei Jahre."))
+
+    res = client.post("/ask/stream", json={"question": "Wie lange ist die Garantie?"})
+    events = [json.loads(line) for line in res.text.splitlines()]
+
+    assert res.headers["content-type"].startswith("application/x-ndjson")
+    assert events[0]["type"] == "sources" and events[0]["sources"][0]["filename"] == "garantie.pdf"
+    assert "".join(e["text"] for e in events if e["type"] == "token").strip() == FakeLLM.ANSWER
+    assert events[-1] == {"type": "done"}
+
+
+def test_ask_returns_503_when_llm_is_down(client):
+    upload(client, "garantie.pdf", make_pdf("Die Garantie fuer Neuwagen betraegt zwei Jahre."))
+    question = {"question": "Wie lange ist die Garantie?"}
+    assert client.post("/ask", json=question).status_code == 503
+    assert client.post("/ask/stream", json=question).status_code == 503
+    # search keeps working without the LLM
+    assert query(client, query="Garantie").status_code == 200
+
+
+def test_ask_validation(client):
+    assert client.post("/ask", json={"question": "  "}).status_code == 422

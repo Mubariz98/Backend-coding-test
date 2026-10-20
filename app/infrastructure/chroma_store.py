@@ -59,6 +59,5 @@ class ChromaVectorStore:
             )
         ]
 
-    def has_document(self, document_id: str) -> bool:
-        res = self._collection.get(where={"document_id": document_id}, limit=1, include=[])
-        return bool(res["ids"])
+    def delete_document(self, document_id: str) -> None:
+        self._collection.delete(where={"document_id": document_id})

@@ -14,7 +14,7 @@ from app.shared.models import Chunk
 @pytest.fixture(params=["qdrant", "chroma"])
 def store(request, tmp_path):
     if request.param == "qdrant":
-        return QdrantVectorStore(str(tmp_path), "test", vector_size=3)
+        return QdrantVectorStore("test", vector_size=3, path=str(tmp_path))
     return ChromaVectorStore(str(tmp_path), "test")
 
 
@@ -50,10 +50,16 @@ def test_filter_by_document(store):
     assert [h.chunk.document_id for h in hits] == ["b"]
 
 
-def test_has_document(store):
+def test_delete_document_removes_only_its_chunks(store):
+    store.add([chunk("a", 0), chunk("a", 1), chunk("b", 0)], [[1.0, 0.0, 0.0]] * 3)
+    store.delete_document("a")
+    assert [h.chunk.document_id for h in store.search([1.0, 0.0, 0.0], top_k=10)] == ["b"]
+
+
+def test_delete_unknown_document_is_noop(store):
     store.add([chunk("a", 0)], [[1.0, 0.0, 0.0]])
-    assert store.has_document("a")
-    assert not store.has_document("b")
+    store.delete_document("missing")
+    assert len(store.search([1.0, 0.0, 0.0], top_k=10)) == 1
 
 
 def test_add_is_idempotent(store):
@@ -67,11 +73,11 @@ def test_add_nothing_is_noop(store):
     assert store.search([1.0, 0.0, 0.0], top_k=5) == []
 
 
-def test_data_persists_across_instances(request, store, tmp_path):
+def test_data_persists_across_instances(store, tmp_path):
     store.add([chunk("a", 0)], [[1.0, 0.0, 0.0]])
     if isinstance(store, QdrantVectorStore):
         store._client.close()  # embedded Qdrant allows one client per folder
-        reopened = QdrantVectorStore(str(tmp_path), "test", vector_size=3)
+        reopened = QdrantVectorStore("test", vector_size=3, path=str(tmp_path))
     else:
         reopened = ChromaVectorStore(str(tmp_path), "test")
-    assert reopened.has_document("a")
+    assert [h.chunk.id for h in reopened.search([1.0, 0.0, 0.0], top_k=5)] == ["a:1:0"]
